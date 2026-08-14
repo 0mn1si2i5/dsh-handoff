@@ -1,0 +1,8 @@
+# pnpm 11 blocks any dependency shipping an install/build script until it is
+# explicitly reviewed here (strictDepBuilds defaults to true: an unlisted
+# script is a hard install error). These are test-only transitive deps of
+# @deepseek-ai/dsh-subprocess-local; the native modules genuinely need theirs.
+allowBuilds:
+  node-pty: true
+  koffi: true
+  '@deepseek-ai/dsh-subprocess-local': true
