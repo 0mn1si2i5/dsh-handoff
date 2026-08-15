@@ -36,9 +36,9 @@
     "build": "tsdown && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src tests",
-    "test": "vitest run",
+    "test": "pnpm test:unit && pnpm test:e2e && vitest run tests/package.spec.ts",
     "test:unit": "vitest run tests/config.spec.ts tests/redact.spec.ts tests/document.spec.ts tests/git.spec.ts tests/summarize.spec.ts tests/save.spec.ts tests/load.spec.ts tests/command.spec.ts",
-    "test:e2e": "vitest run tests/loader.e2e.ts",
+    "test:e2e": "pnpm build && vitest run tests/loader.e2e.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && publint",
     "prepack": "pnpm build"
   },
