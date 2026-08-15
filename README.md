@@ -18,9 +18,19 @@ DeepSeek Harness 的会话通常很长，换新会话时难以把上一个会话
 - 插件记录 Git 仓库状态，并生成可由用户检查和提交的交接文档。
 - 安装 `@deepseek-ai/*` 的 rc/beta 依赖需要用户自己的 npm 权限；认证应配置在用户级 `~/.npmrc`，不要把认证配置行或令牌写入仓库或文档。
 
-## 发布前本地安装
+## 安装
 
-在尚未发布到 npm 之前，用本地 tarball 安装最接近真实的发布结果。不要使用 npm 的 `link` / `workspace` 协议，也不要直接链接源码目录：
+通过 GitHub 分发安装，与 `dsh-external` org 的主流方式一致，无需 npm scope：
+
+```bash
+dsh plugin --profile web add github:dsh-external/dsh-handoff
+```
+
+安装的是仓库里已提交的构建产物（`lib/`），无需在安装时执行构建脚本。
+
+## 本地打包验证（开发用）
+
+在改代码时，用本地 tarball 安装最接近真实的发布结果，而不是直接链接源码目录：
 
 ```bash
 pnpm install
@@ -31,14 +41,6 @@ dsh --profile web --dump-config
 ```
 
 最后一条命令用于确认 `dsh-handoff` 已出现在配置中。安装的是打包后的产物，而不是源码目录，因此能验证发布包的实际内容。
-
-## npm 发布后的安装
-
-发布后可用包名安装：
-
-```bash
-dsh plugin --profile web add @dsh-external/dsh-handoff
-```
 
 ## 快速使用
 
