@@ -131,9 +131,13 @@ export function parsePorcelainZ(text: string): string[] {
     if (record.length < 4) {
       throw new Error('malformed git porcelain record: short record')
     }
-    const status = record[0]!
+    // A rename/copy is signalled by R or C in either status column: the index
+    // column (X) for staged renames, or the worktree column (Y) for unstaged
+    // renames recorded via intent-to-add. Both consume the trailing source.
+    const x = record[0]!
+    const y = record[1]!
     const path = record.slice(3)
-    if (status === 'R' || status === 'C') {
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') {
       const source = records[index + 1]
       if (source === undefined || source === '') {
         throw new Error('malformed git porcelain record: rename or copy without source')

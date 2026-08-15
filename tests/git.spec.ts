@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -24,6 +24,36 @@ describe('porcelain parser', () => {
   it('normalizes a copy', () => {
     const text = 'C  copied.ts\0original.ts\0'
     expect(parsePorcelainZ(text)).toEqual(['C  copied.ts <- original.ts'])
+  })
+
+  it('normalizes a first-column rename', () => {
+    const text = 'R  new.ts\0old.ts\0'
+    expect(parsePorcelainZ(text)).toEqual(['R  new.ts <- old.ts'])
+  })
+
+  it('normalizes a second-column rename', () => {
+    const text = ' R new.ts\0old.ts\0'
+    expect(parsePorcelainZ(text)).toEqual([' R new.ts <- old.ts'])
+  })
+
+  it('normalizes a first-column copy', () => {
+    const text = 'C  copy.ts\0old.ts\0'
+    expect(parsePorcelainZ(text)).toEqual(['C  copy.ts <- old.ts'])
+  })
+
+  it('normalizes a second-column copy', () => {
+    const text = ' C copy.ts\0old.ts\0'
+    expect(parsePorcelainZ(text)).toEqual([' C copy.ts <- old.ts'])
+  })
+
+  it('rejects a second-column rename or copy without a source path', () => {
+    expect(() => parsePorcelainZ(' R new.ts\0')).toThrow()
+    expect(() => parsePorcelainZ(' C copy.ts\0')).toThrow()
+  })
+
+  it('does not emit a second-column rename source as an independent record', () => {
+    const text = ' R new.ts\0old.ts\0 M other.ts\0'
+    expect(parsePorcelainZ(text)).toEqual([' R new.ts <- old.ts', ' M other.ts'])
   })
 
   it('preserves paths containing spaces', () => {
@@ -71,6 +101,15 @@ describe('captureGit with a real repository', () => {
       await execFileAsync('git', ['add', 'src/index.ts'], { cwd: root })
       await execFileAsync('git', ['commit', '-m', 'init'], { cwd: root })
 
+      // A committed file renamed in the worktree and recorded via intent-to-add:
+      // porcelain -z reports ` R new.txt\0old.txt\0` (R in the worktree column),
+      // so the parser must consume the trailing source record.
+      await writeFile(join(root, 'old.txt'), 'old content\n')
+      await execFileAsync('git', ['add', 'old.txt'], { cwd: root })
+      await execFileAsync('git', ['commit', '-m', 'add old'], { cwd: root })
+      await rename(join(root, 'old.txt'), join(root, 'new.txt'))
+      await execFileAsync('git', ['add', '-N', 'new.txt'], { cwd: root })
+
       await writeFile(join(root, 'src', 'index.ts'), 'export const value = 2\n')
       await mkdir(join(root, 'docs', 'handoffs'), { recursive: true })
       await writeFile(join(root, 'docs', 'handoffs', 'current.md'), 'old handoff\n')
@@ -82,6 +121,11 @@ describe('captureGit with a real repository', () => {
       expect(snapshot.branch).toBe('main')
       expect(snapshot.head).toMatch(/^[0-9a-f]{40}$/)
       expect(snapshot.changedFiles).toContain(' M src/index.ts')
+      const renames = snapshot.changedFiles.filter((file) => file.includes('<-'))
+      expect(renames).toEqual([' R new.txt <- old.txt'])
+      // The rename source and destination appear only inside the rename record.
+      expect(snapshot.changedFiles.filter((file) => !file.includes('<-') && file.endsWith(' old.txt'))).toEqual([])
+      expect(snapshot.changedFiles.filter((file) => !file.includes('<-') && file.endsWith(' new.txt'))).toEqual([])
       expect(snapshot.changedFiles.some(file => file.includes('docs/handoffs/current.md'))).toBe(false)
 
       const again = await captureGit(ctx.subprocess, root, undefined, 10000)
