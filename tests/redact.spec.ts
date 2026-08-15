@@ -131,4 +131,36 @@ describe('handoff redaction', () => {
     expect(result.text).toBe('token=<redacted:api-token> kept-field')
     expect(result.counts['api-token']).toBe(1)
   })
+
+  it('redacts a double-quoted value containing an escaped quote', () => {
+    const input = String.raw`token="abcdefgh\"SECRETTAIL" kept-field`
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toBe('token=<redacted:api-token> kept-field')
+    expect(result.counts).toEqual({ 'api-token': 1 })
+  })
+
+  it('redacts a single-quoted value containing an escaped quote', () => {
+    const input = String.raw`password='abcdefgh\'SECRETTAIL' kept-field`
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toBe('password=<redacted:password> kept-field')
+    expect(result.counts).toEqual({ password: 1 })
+  })
+
+  it('redacts an unterminated quoted value to end of line without crossing the newline', () => {
+    const input = 'token="abcdefgh secret SECRETTAIL\nnext-field-kept'
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toBe('token=<redacted:api-token>\nnext-field-kept')
+    expect(result.counts).toEqual({ 'api-token': 1 })
+  })
+
+  it('redacts a closing quote followed by an adjacent non-separator suffix', () => {
+    const input = 'token="abcdefgh"SECRETTAIL kept-field'
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toBe('token=<redacted:api-token> kept-field')
+    expect(result.counts).toEqual({ 'api-token': 1 })
+  })
 })
