@@ -60,15 +60,21 @@ async function saveTransaction(
 
   const changed = git.changedFiles.map((file) => redactText(file, options.env))
   const changedFiles = changed.map((result) => result.text)
-  const gitCounts = mergeRedactionCounts(...changed.map((result) => result.counts))
+  const workspace = redactText(git.relativeCwd, options.env)
+  const branch = redactText(git.branch, options.env)
+  const gitCounts = mergeRedactionCounts(
+    ...changed.map((result) => result.counts),
+    workspace.counts,
+    branch.counts,
+  )
   const redactionCounts: Readonly<RedactionCounts> = mergeRedactionCounts(summarized.redactions, gitCounts)
 
   const metadata: HandoffMetadata = {
     generated: options.now().toISOString(),
     sourceSession: String(agent.id),
     capturedThroughSeq: surface.capturedThroughSeq,
-    workspace: git.relativeCwd,
-    gitBranch: git.branch,
+    workspace: workspace.text,
+    gitBranch: branch.text,
     gitHead: git.head,
     gitStateDigest: git.stateDigest,
   }

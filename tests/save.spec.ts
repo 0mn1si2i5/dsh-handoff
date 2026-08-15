@@ -541,6 +541,26 @@ describe('saveHandoff', () => {
     expect(result.redactionCount).toBe(1)
   })
 
+  it('redacts fake secrets in git workspace and branch metadata', async () => {
+    vi.mocked(captureGit).mockResolvedValue(
+      gitSnapshot({
+        relativeCwd: 'packages/npm_FAKE_1234567890',
+        branch: 'feature/ghp_FAKE_1234567890',
+      }),
+    )
+    const h = harness()
+    const result = await h.save()
+    const written = h.fs.files.get(ABS_HANDOFF)
+    expect(written).toBeDefined()
+    expect(written).not.toContain('npm_FAKE_1234567890')
+    expect(written).not.toContain('ghp_FAKE_1234567890')
+    expect(written).toContain('Workspace: packages/<redacted:npm-token>')
+    expect(written).toContain('Git branch: feature/<redacted:api-token>')
+    expect(written).toContain('api-token: 1')
+    expect(written).toContain('npm-token: 1')
+    expect(result.redactionCount).toBe(2)
+  })
+
   it('sums redaction counts across input, output, and git filenames', async () => {
     const session = makeSeededSession('instruction npm_FAKE_1234567890')
     const event = session.events.find((candidate) => candidate.type === 'user/message') as unknown as SurfaceEvent
