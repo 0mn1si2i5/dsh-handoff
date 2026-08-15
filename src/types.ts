@@ -13,3 +13,6 @@ export interface ResolvedHandoffConfig {
   readonly maxDocumentBytes: number
   readonly gitTimeoutMs: number
 }
+
+export type SecretKind = 'api-token' | 'authorization' | 'private-key' | 'npm-token' | 'password' | 'environment'
+export type RedactionCounts = Partial<Record<SecretKind, number>>
