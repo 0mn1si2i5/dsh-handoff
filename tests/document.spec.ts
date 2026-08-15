@@ -214,3 +214,29 @@ describe('handoff document codec', () => {
     expect(renderDocument()).toBe(text)
   })
 })
+
+describe('redaction warnings parsing', () => {
+  it('rejects an unknown SecretKind', () => {
+    const text = renderDocument().replace('npm-token: 1', 'unknown-kind: 1')
+    expect(() => parseHandoffDocument(text, 32768)).toThrow()
+  })
+
+  it('rejects a duplicate redaction category', () => {
+    const text = renderDocument().replace('npm-token: 1', 'npm-token: 1\nnpm-token: 2')
+    expect(() => parseHandoffDocument(text, 32768)).toThrow()
+  })
+
+  it.each(['1e3', '0', '-1', '1.5', '01', '9007199254740992'])(
+    'rejects a non-canonical count %s',
+    (count) => {
+      const text = renderDocument().replace('npm-token: 1', `npm-token: ${count}`)
+      expect(() => parseHandoffDocument(text, 32768)).toThrow()
+    },
+  )
+
+  it('still round-trips multiple distinct categories', () => {
+    const text = renderDocument([' M src/index.ts'], { 'npm-token': 2, password: 1 })
+    const parsed = parseHandoffDocument(text, 32768)
+    expect(parsed.redactions).toEqual({ 'npm-token': 2, password: 1 })
+  })
+})

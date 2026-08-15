@@ -130,6 +130,15 @@ function parseChangedFiles(body: string): string[] {
   return body.split('\n')
 }
 
+const SECRET_KINDS = new Set<string>([
+  'api-token',
+  'authorization',
+  'private-key',
+  'npm-token',
+  'password',
+  'environment',
+])
+
 function parseRedactionWarnings(body: string): RedactionCounts {
   if (body === '(none)') return {}
   const counts: RedactionCounts = {}
@@ -137,8 +146,13 @@ function parseRedactionWarnings(body: string): RedactionCounts {
     const separator = line.indexOf(': ')
     if (separator < 0) throw new Error('invalid redaction warning line')
     const category = line.slice(0, separator)
-    const count = Number(line.slice(separator + 2))
-    if (!Number.isSafeInteger(count) || count < 0) throw new Error('invalid redaction warning count')
+    const countText = line.slice(separator + 2)
+    if (!SECRET_KINDS.has(category)) throw new Error('unknown redaction category')
+    if (counts[category as SecretKind] !== undefined) throw new Error('duplicate redaction category')
+    const count = Number(countText)
+    if (!/^[1-9][0-9]*$/.test(countText) || !Number.isSafeInteger(count)) {
+      throw new Error('invalid redaction warning count')
+    }
     counts[category as SecretKind] = count
   }
   return counts
