@@ -3,6 +3,11 @@ import type { RedactionCounts, SecretKind } from './types.ts'
 
 const MIN_CREDENTIAL_CHARS = 8
 
+// Full credential alphabet (base64 plus the common `_`, `.`, and `-`
+// separators). Rules consume the entire value so a legal-looking prefix never
+// leaves a secret suffix such as `+`, `/`, `=`, or `.` exposed.
+const CREDENTIAL_CHARS = 'A-Za-z0-9_+./=-'
+
 interface Rule {
   readonly category: SecretKind
   readonly regex: RegExp
@@ -21,17 +26,17 @@ const RULES: readonly Rule[] = [
   },
   {
     category: 'npm-token',
-    regex: /_authToken=([A-Za-z0-9_\-]{8,})/g,
+    regex: new RegExp(`_authToken=([${CREDENTIAL_CHARS}]{8,})`, 'g'),
     replacement: '_authToken=<redacted:npm-token>',
   },
   {
     category: 'npm-token',
-    regex: /npm_[A-Za-z0-9_\-]{8,}/g,
+    regex: new RegExp(`npm_[${CREDENTIAL_CHARS}]{8,}`, 'g'),
     replacement: '<redacted:npm-token>',
   },
   {
     category: 'authorization',
-    regex: /(Bearer|Basic)\s+([A-Za-z0-9_\-.]{8,})/gi,
+    regex: new RegExp(`(Bearer|Basic)\\s+([${CREDENTIAL_CHARS}]{8,})`, 'gi'),
     replacement: '$1 <redacted:authorization>',
   },
   {
@@ -41,17 +46,17 @@ const RULES: readonly Rule[] = [
   },
   {
     category: 'api-token',
-    regex: /(sk_|dsk_|ghp_|github_pat_)[A-Za-z0-9_\-]{8,}/g,
+    regex: new RegExp(`(sk_|dsk_|ghp_|github_pat_)[${CREDENTIAL_CHARS}]{8,}`, 'g'),
     replacement: '<redacted:api-token>',
   },
   {
     category: 'password',
-    regex: /(password)(\s*[=:]\s*)([A-Za-z0-9_\-]{8,})/gi,
+    regex: new RegExp(`(password)(\\s*[=:]\\s*)([${CREDENTIAL_CHARS}]{8,})`, 'gi'),
     replacement: '$1$2<redacted:password>',
   },
   {
     category: 'api-token',
-    regex: /(api[_-]?key|token|secret)(\s*[=:]\s*)([A-Za-z0-9_\-]{8,})/gi,
+    regex: new RegExp(`(api[_-]?key|token|secret)(\\s*[=:]\\s*)([${CREDENTIAL_CHARS}]{8,})`, 'gi'),
     replacement: '$1$2<redacted:api-token>',
   },
 ]
@@ -80,12 +85,26 @@ function addCount(target: RedactionCounts, category: SecretKind, count: number):
   target[category] = (target[category] ?? 0) + count
 }
 
+function compareByLengthThenValue(a: string, b: string): number {
+  if (a.length !== b.length) return b.length - a.length
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
+}
+
 function redactEnvironment(text: string, env: NodeJS.ProcessEnv): { text: string; count: number } {
-  let output = text
-  let count = 0
+  const values = new Set<string>()
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined || value.length < MIN_CREDENTIAL_CHARS) continue
     if (!isSensitiveEnvName(name)) continue
+    values.add(value)
+  }
+  let output = text
+  let count = 0
+  // Deduplicate, then process longest first so a shorter value that is a
+  // prefix of a longer value can never leave the longer secret's suffix
+  // exposed. The value tie-break keeps the order independent of key order.
+  for (const value of [...values].sort(compareByLengthThenValue)) {
     const pattern = new RegExp(escapeRegExp(value), 'g')
     const matches = output.match(pattern)
     if (matches === null) continue
