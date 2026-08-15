@@ -66,6 +66,7 @@ describe('registerHandoffCommand', () => {
     expect(listed.find((item) => item.name === 'handoff')).toMatchObject({
       name: 'handoff',
       description: 'Save or load the development handoff document',
+      input: { hint: 'save | load' },
     })
     await m.ctx.fiber.dispose()
   })

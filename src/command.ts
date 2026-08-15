@@ -113,6 +113,7 @@ export function registerHandoffCommand(ctx: Context, config: ResolvedHandoffConf
     yield ctx.commands.register({
       name: 'handoff',
       description: 'Save or load the development handoff document',
+      input: { hint: 'save | load' },
       handler,
     })
   })
