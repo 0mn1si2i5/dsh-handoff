@@ -85,11 +85,6 @@ async function loadTransaction(
     return { kind: 'already-loaded', path: HANDOFF_PATH, digest: parsed.digest }
   }
 
-  const pendingInInbox = agent.inbox.nextStep.some((message) => hasMarker(message, marker))
-  if (pendingInInbox) {
-    return { kind: 'already-loaded', path: HANDOFF_PATH, digest: parsed.digest }
-  }
-
   if (signal.aborted) throw new HandoffError('cancelled', 'load was cancelled')
 
   const injected = [
@@ -101,11 +96,19 @@ async function loadTransaction(
     '</dsh-handoff>',
   ].join('\n')
 
-  agent.inject(
+  // Append the recall straight onto the durable surface instead of parking it
+  // in the pending inbox. A pending recall (`agent.inject`) stays invisible
+  // until the next turn admits it, so a `/handoff load` in a fresh thread shows
+  // nothing at all. A surface `user/message` is immediately visible to the UI —
+  // it renders as a plugin-sourced recall node — and still feeds the next
+  // request's model history without waking the agent.
+  agent.session.append(
+    'user/message',
     createUserMessage({
       content: [{ type: 'text', text: injected }],
       source: { kind: 'plugin', plugin: RECALL_PLUGIN, form: RECALL_FORM },
     }),
+    { surfaceOp: 'append' },
   )
 
   return { kind: 'loaded', path: HANDOFF_PATH, digest: parsed.digest, stale }

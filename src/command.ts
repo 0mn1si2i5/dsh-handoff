@@ -1,5 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { HandoffError } from './error.ts'
 import { saveHandoff } from './save.ts'
 import type { SaveResult } from './save.ts'
@@ -33,6 +35,30 @@ function loadText(result: LoadResult): string {
   return 'Loaded docs/handoffs/current.md. Send the next development instruction.'
 }
 
+const ACK_PLUGIN = 'dsh-handoff'
+
+/** One-line notice account plus the model-facing confirmation prompt. */
+interface HandoffAck {
+  summary: string
+  instruction: string
+}
+
+/**
+ * Ask the model to report a completed operation. A `/handoff` command renders
+ * as a flow node, not a conversation turn, so without this follow-up the
+ * assistant stays silent and a fresh thread shows nothing but the command
+ * lifecycle. The follow-up message is a `notice` (a one-off account of what
+ * just happened) and wakes the model for one short confirmation turn.
+ */
+function acknowledge(agent: Agent, ack: HandoffAck): void {
+  agent.followup(
+    createUserMessage({
+      content: [{ type: 'text', text: ack.instruction }],
+      source: { kind: 'plugin', plugin: ACK_PLUGIN, form: 'notice', summary: ack.summary },
+    }),
+  )
+}
+
 function handoffFailure(error: HandoffError): CommandResult {
   switch (error.code) {
     case 'busy':
@@ -64,9 +90,25 @@ async function executeHandoff(
         env: process.env,
         now: () => new Date(),
       })
+      acknowledge(invocation.agent, {
+        summary: `Saved ${result.path}`,
+        instruction: `The development handoff document was saved to ${result.path}. Briefly confirm this to the user.`,
+      })
       return { kind: 'success', text: saveText(result) }
     }
     const result = await loadHandoff(ctx, invocation.agent, config, signal)
+    acknowledge(
+      invocation.agent,
+      result.kind === 'already-loaded'
+        ? {
+            summary: `Already loaded ${result.path}`,
+            instruction: 'The development handoff document is already loaded in this session. Briefly confirm this to the user.',
+          }
+        : {
+            summary: `Loaded ${result.path}`,
+            instruction: 'The development handoff document was loaded. Briefly confirm this to the user.',
+          },
+    )
     return { kind: 'success', text: loadText(result) }
   } catch (error: unknown) {
     if (error instanceof HandoffError) return handoffFailure(error)

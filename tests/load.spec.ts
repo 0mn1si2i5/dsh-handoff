@@ -5,6 +5,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionQueryService from '@deepseek-ai/dsh-session-query'
@@ -97,6 +98,13 @@ function messageText(message: UserMessage): string {
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('')
+}
+
+/** All `user/message` events currently on the durable surface, in log order. */
+function surfaceUserMessages(agent: Agent): UserMessage[] {
+  return agent.session.events
+    .filter((event): event is SessionEvent<'user/message'> => event.type === 'user/message')
+    .map((event) => event.data)
 }
 
 class MemoryFileSystem extends FileSystem {
@@ -289,7 +297,7 @@ describe('loadHandoff', () => {
       expect(result.stale).toBe(false)
       expect(result.digest).toBe(handoffDigest(validDocument()))
     }
-    expect(h.agent.inbox.nextStep).toHaveLength(1)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(1)
     await h.dispose()
   })
 
@@ -303,7 +311,7 @@ describe('loadHandoff', () => {
   it('injects the recall source exactly as plugin/dsh-handoff/recall', async () => {
     const h = await harness({ document: validDocument() })
     await h.load()
-    const injected = h.agent.inbox.nextStep[0]!
+    const injected = surfaceUserMessages(h.agent)[0]!
     expect(injected.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
     await h.dispose()
   })
@@ -311,7 +319,7 @@ describe('loadHandoff', () => {
   it('wraps the document with the exact marker and instruction', async () => {
     const h = await harness({ document: validDocument() })
     await h.load()
-    const injected = h.agent.inbox.nextStep[0]!
+    const injected = surfaceUserMessages(h.agent)[0]!
     expect(messageText(injected)).toBe(expectedInjectedText(validDocument()))
     await h.dispose()
   })
@@ -325,24 +333,16 @@ describe('loadHandoff', () => {
     const result = await h.load()
     expect(result.kind).toBe('loaded')
     if (result.kind === 'loaded') expect(result.stale).toBe(true)
-    expect(h.agent.inbox.nextStep).toHaveLength(1)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(1)
     await h.dispose()
   })
 
-  it('deduplicates a recall already admitted to the current surface', async () => {
+  it('deduplicates a recall already on the current surface', async () => {
     const h = await harness({ document: validDocument() })
     await h.load()
-    const pending = h.agent.inbox.nextStep[0]!
-    // Simulate a turn admitting the recall: move the pending message out of the
-    // inbox and onto the durable surface. This leaves no other inbox message
-    // carrying the same marker, so the second load can only deduplicate through
-    // the surface scan — a regression in that scan must fail here, not fall back
-    // to the still-pending inbox branch.
-    expect(h.agent.inbox.remove(pending.id)).toBe(true)
-    h.agent.session.append('user/message', createUserMessage({ content: pending.content, source: pending.source }), {
-      surfaceOp: 'append',
-    })
-
+    // The first load admits the recall straight onto the durable surface and
+    // leaves the pending inbox untouched.
+    expect(surfaceUserMessages(h.agent)).toHaveLength(1)
     expect(h.agent.inbox.nextStep).toHaveLength(0)
 
     const result = await h.load()
@@ -351,16 +351,9 @@ describe('loadHandoff', () => {
       expect(result.path).toBe(HANDOFF_PATH)
       expect(result.digest).toBe(handoffDigest(validDocument()))
     }
+    // A second load must not append a duplicate recall.
+    expect(surfaceUserMessages(h.agent)).toHaveLength(1)
     expect(h.agent.inbox.nextStep).toHaveLength(0)
-    await h.dispose()
-  })
-
-  it('deduplicates a pending recall still in the inbox before the next turn', async () => {
-    const h = await harness({ document: validDocument() })
-    await h.load()
-    const result = await h.load()
-    expect(result).toMatchObject({ kind: 'already-loaded', path: HANDOFF_PATH })
-    expect(h.agent.inbox.nextStep).toHaveLength(1)
     await h.dispose()
   })
 
@@ -384,7 +377,7 @@ describe('loadHandoff', () => {
     h.fs.setDocument(alt)
     const result = await h.load()
     expect(result.kind).toBe('loaded')
-    expect(h.agent.inbox.nextStep).toHaveLength(2)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(2)
     await h.dispose()
   })
 
@@ -392,15 +385,17 @@ describe('loadHandoff', () => {
     const document = validDocument()
     const marker = `<!-- dsh-handoff-digest:sha256:${handoffDigest(document)} -->`
     const h = await harness({ document })
-    h.agent.inject(
+    h.agent.session.append(
+      'user/message',
       createUserMessage({
         content: [{ type: 'text', text: marker }],
         source: { kind: 'plugin', plugin: 'other-plugin', form: 'recall' },
       }),
+      { surfaceOp: 'append' },
     )
     const result = await h.load()
     expect(result.kind).toBe('loaded')
-    expect(h.agent.inbox.nextStep).toHaveLength(2)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(2)
     await h.dispose()
   })
 
@@ -408,36 +403,38 @@ describe('loadHandoff', () => {
     const document = validDocument()
     const marker = `<!-- dsh-handoff-digest:sha256:${handoffDigest(document)} -->`
     const h = await harness({ document })
-    h.agent.inject(
+    h.agent.session.append(
+      'user/message',
       createUserMessage({
         content: [{ type: 'text', text: marker }],
         source: { kind: 'plugin', plugin: 'dsh-handoff', form: 'relay' },
       }),
+      { surfaceOp: 'append' },
     )
     const result = await h.load()
     expect(result.kind).toBe('loaded')
-    expect(h.agent.inbox.nextStep).toHaveLength(2)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(2)
     await h.dispose()
   })
 
   it('rejects an invalid document without injecting', async () => {
     const h = await harness({ document: 'not a handoff document' })
     await expect(h.load()).rejects.toMatchObject({ name: 'HandoffError', code: 'document' })
-    expect(h.agent.inbox.nextStep).toHaveLength(0)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(0)
     await h.dispose()
   })
 
   it('rejects an unknown format version without injecting', async () => {
     const h = await harness({ document: validDocument().replace('Format: dsh-handoff/v1', 'Format: dsh-handoff/v2') })
     await expect(h.load()).rejects.toMatchObject({ name: 'HandoffError', code: 'document' })
-    expect(h.agent.inbox.nextStep).toHaveLength(0)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(0)
     await h.dispose()
   })
 
   it('rejects an oversized document without injecting', async () => {
     const h = await harness({ config: { maxDocumentBytes: 16 }, document: validDocument() })
     await expect(h.load()).rejects.toMatchObject({ name: 'HandoffError' })
-    expect(h.agent.inbox.nextStep).toHaveLength(0)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(0)
     await h.dispose()
   })
 
@@ -445,14 +442,14 @@ describe('loadHandoff', () => {
     const h = await harness({ document: validDocument() })
     h.fs.invalidUtf8 = true
     await expect(h.load()).rejects.toMatchObject({ name: 'HandoffError' })
-    expect(h.agent.inbox.nextStep).toHaveLength(0)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(0)
     await h.dispose()
   })
 
   it('rejects a missing document without injecting', async () => {
     const h = await harness()
     await expect(h.load()).rejects.toMatchObject({ name: 'HandoffError' })
-    expect(h.agent.inbox.nextStep).toHaveLength(0)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(0)
     await h.dispose()
   })
 
@@ -479,7 +476,7 @@ describe('loadHandoff', () => {
     const h = await harness({ document: 'not a handoff document' })
     await expect(h.load()).rejects.toMatchObject({ name: 'HandoffError' })
     expect(h.agent.inbox.nextStep).toHaveLength(0)
-    expect(h.agent.session.events.some((event) => event.type === 'user/message')).toBe(false)
+    expect(surfaceUserMessages(h.agent)).toHaveLength(0)
     await h.dispose()
   })
 })

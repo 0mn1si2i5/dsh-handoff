@@ -6,8 +6,8 @@
 
 DeepSeek Harness 的会话通常很长，换新会话时难以把上一个会话已经确认的结论、当前进度和下一步计划完整带过去。本插件提供两个命令来解决这个问题：
 
-- `/handoff save` 把当前线程的有效状态总结成一份文档，写入 `docs/handoffs/current.md`。
-- `/handoff load` 把这份文档作为 durable recall 注入一个新线程，供下一轮请求使用。
+- `/handoff save` 把当前线程的有效状态总结成一份文档，写入 `docs/handoffs/current.md`，并让 assistant 回一句话确认。
+- `/handoff load` 把这份文档作为 durable recall 注入一个新线程，立即显示为一条可见的召回节点，并让 assistant 回一句话确认已加载。
 
 它是一份**交接快照**，不是对当前线程上下文的压缩、删除或替换。`save` 不修改原线程已有的消息，`load` 也不会删除或压缩新线程里的其他上下文。
 
@@ -45,13 +45,13 @@ dsh plugin --profile web add @dsh-external/dsh-handoff
 1. 在**原线程**执行 `/handoff save`。
 2. 查看或提交生成的 `docs/handoffs/current.md`。
 3. 在同一仓库的**新线程**执行 `/handoff load`。
-4. `load` 不会唤醒模型；用户还需要发送下一条开发指令，交接文档才会进入下一轮请求。
+4. `load` 会把交接文档作为一条可见的召回节点立即显示出来，并唤醒模型回一句话确认；之后用户发送下一条开发指令即可继续。
 5. 当前代码与当前用户指令优先于历史 handoff 文档。
 
 ## Commands
 
-- `/handoff save` — 总结当前会话，写入 `docs/handoffs/current.md`。
-- `/handoff load` — 把 `docs/handoffs/current.md` 作为 `recall` 上下文注入当前会话。
+- `/handoff save` — 总结当前会话，写入 `docs/handoffs/current.md`，并让 assistant 确认。
+- `/handoff load` — 把 `docs/handoffs/current.md` 作为 `recall` 上下文注入当前会话，显示为一条召回节点，并让 assistant 确认。
 
 两个命令都要求 agent 处于 idle 状态，且不接受额外参数。
 
@@ -86,9 +86,9 @@ dsh plugin --profile web add @dsh-external/dsh-handoff
 
 ## Token 与模型行为
 
-- `save` 会发起一次独立的总结调用，消耗一次输入加输出的 token；它不会减少原线程的 token 占用。
-- `load` 本身不调用模型。
-- 交接文档在下一轮请求开始时才占用上下文 token。
+- `save` 会发起一次独立的总结调用，外加一次确认回复，各消耗一次输入加输出的 token；它不会减少原线程的 token 占用。
+- `load` 会唤醒模型一次，让 assistant 确认已加载，同样消耗少量 token。
+- 交接文档本体在下一轮请求开始时才进入模型上下文。
 - 插件不承诺任何供应商的 KV cache 命中。
 
 ## 限制

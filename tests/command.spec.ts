@@ -34,6 +34,7 @@ interface Mount {
   ctx: Context
   fiber: Fiber
   agent: Agent
+  followup: ReturnType<typeof vi.fn>
 }
 
 async function mount(config: ResolvedHandoffConfig = resolveConfig({})): Promise<Mount> {
@@ -44,8 +45,9 @@ async function mount(config: ResolvedHandoffConfig = resolveConfig({})): Promise
       registerHandoffCommand(inner, config)
     }, { inject: ['commands'] }),
   )
-  const agent = { id: SessionId('command-agent') } as Agent
-  return { ctx, fiber, agent }
+  const followup = vi.fn()
+  const agent = { id: SessionId('command-agent'), followup } as unknown as Agent
+  return { ctx, fiber, agent, followup }
 }
 
 function invoke(mount: Mount, rawInput: string, signal: AbortSignal = new AbortController().signal): CommandResult | Promise<CommandResult> {
@@ -173,6 +175,91 @@ describe('registerHandoffCommand', () => {
       kind: 'success',
       text: 'docs/handoffs/current.md is already loaded in this session.',
     })
+    await m.ctx.fiber.dispose()
+  })
+
+  it('wakes the model with a notice after a save', async () => {
+    vi.mocked(saveHandoff).mockResolvedValue({
+      path: HANDOFF_PATH,
+      capturedThroughSeq: 12,
+      digest: 'd'.repeat(64),
+      redactionCount: 2,
+    } satisfies SaveResult)
+    const m = await mount()
+    await invoke(m, ' save')
+    expect(m.followup).toHaveBeenCalledTimes(1)
+    const message = m.followup.mock.calls[0]![0] as {
+      source: { kind: string; plugin: string; form: string; summary: string }
+      content: readonly { type: string; text?: string }[]
+    }
+    expect(message.source).toEqual({
+      kind: 'plugin',
+      plugin: 'dsh-handoff',
+      form: 'notice',
+      summary: `Saved ${HANDOFF_PATH}`,
+    })
+    expect(message.content).toEqual([
+      { type: 'text', text: `The development handoff document was saved to ${HANDOFF_PATH}. Briefly confirm this to the user.` },
+    ])
+    await m.ctx.fiber.dispose()
+  })
+
+  it('wakes the model with a notice after a load', async () => {
+    vi.mocked(loadHandoff).mockResolvedValue({
+      kind: 'loaded',
+      path: HANDOFF_PATH,
+      digest: 'd'.repeat(64),
+      stale: false,
+    } satisfies LoadResult)
+    const m = await mount()
+    await invoke(m, ' load')
+    expect(m.followup).toHaveBeenCalledTimes(1)
+    const message = m.followup.mock.calls[0]![0] as {
+      source: { kind: string; plugin: string; form: string; summary: string }
+      content: readonly { type: string; text?: string }[]
+    }
+    expect(message.source).toEqual({
+      kind: 'plugin',
+      plugin: 'dsh-handoff',
+      form: 'notice',
+      summary: `Loaded ${HANDOFF_PATH}`,
+    })
+    expect(message.content).toEqual([
+      { type: 'text', text: 'The development handoff document was loaded. Briefly confirm this to the user.' },
+    ])
+    await m.ctx.fiber.dispose()
+  })
+
+  it('wakes the model with an already-loaded notice when load dedupes', async () => {
+    vi.mocked(loadHandoff).mockResolvedValue({
+      kind: 'already-loaded',
+      path: HANDOFF_PATH,
+      digest: 'd'.repeat(64),
+    } satisfies LoadResult)
+    const m = await mount()
+    await invoke(m, ' load')
+    expect(m.followup).toHaveBeenCalledTimes(1)
+    const message = m.followup.mock.calls[0]![0] as {
+      source: { kind: string; plugin: string; form: string; summary: string }
+      content: readonly { type: string; text?: string }[]
+    }
+    expect(message.source).toEqual({
+      kind: 'plugin',
+      plugin: 'dsh-handoff',
+      form: 'notice',
+      summary: `Already loaded ${HANDOFF_PATH}`,
+    })
+    expect(message.content).toEqual([
+      { type: 'text', text: 'The development handoff document is already loaded in this session. Briefly confirm this to the user.' },
+    ])
+    await m.ctx.fiber.dispose()
+  })
+
+  it('does not wake the model when the command fails', async () => {
+    vi.mocked(saveHandoff).mockRejectedValue(new HandoffError('git', 'failed with git'))
+    const m = await mount()
+    await expect(invoke(m, ' save')).resolves.toEqual({ kind: 'error', text: 'failed with git' })
+    expect(m.followup).not.toHaveBeenCalled()
     await m.ctx.fiber.dispose()
   })
 

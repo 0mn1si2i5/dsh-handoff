@@ -212,7 +212,14 @@ describe('real Loader composition', () => {
 
     // 2. Compose the real services and the handoff plugin through the Loader.
     configRoot = await mkdtemp(join(tmpdir(), 'dsh-handoff-e2e-config-'))
-    const adapter = new ScriptedAdapter(['Source turn complete.', SUMMARY, 'Continuation complete.'])
+    const adapter = new ScriptedAdapter([
+      'Source turn complete.',
+      SUMMARY,
+      'Saved and confirmed.',
+      'Loaded and ready.',
+      'Continuation complete.',
+      'Loaded and ready.',
+    ])
     const { ctx, registration } = await loadComposition(adapter)
     expect(ctx.agents).toBeInstanceOf(AgentRegistry)
     expect(ctx.agentLoop).toBeInstanceOf(AgentLoop)
@@ -221,7 +228,8 @@ describe('real Loader composition', () => {
 
     const signal = new AbortController()
 
-    // 3. Source agent: one turn, then save without mutating its model surface.
+    // 3. Source agent: one turn, then save. The save also wakes the model once
+    // to acknowledge the result, so wait for that turn before reading further.
     const sourceAgent = ctx.agentLoop.create(
       SessionId('loader-source'),
       { provider: 'scripted', model: 'scripted' },
@@ -230,16 +238,19 @@ describe('real Loader composition', () => {
     sourceAgent.followup(createUserMessage({ content: [{ type: 'text', text: SOURCE_TURN }], source: { kind: 'user' } }))
     await sourceAgent.whenIdle()
 
-    const surfaceBefore = sourceAgent.session.deriveMessages()
     const saveExec = await ctx.commands.execute(sourceAgent, '/handoff save', signal.signal)
     expect(saveExec).toBeDefined()
     expect(saveExec!.result).toEqual({
       kind: 'success',
       text: expect.stringMatching(/^Saved docs\/handoffs\/current\.md through session seq \d+ \(0 secrets redacted\)\.$/),
     })
-    const surfaceAfter = sourceAgent.session.deriveMessages()
-    expect(surfaceAfter).toEqual(surfaceBefore)
-    const surfacePreserved = JSON.stringify(surfaceAfter) === JSON.stringify(surfaceBefore)
+    await sourceAgent.whenIdle()
+    const sourceAssistant = sourceAgent.session.events.filter(
+      (event): event is SessionEvent<'assistant/message'> => event.type === 'assistant/message',
+    )
+    expect(sourceAssistant).toHaveLength(2)
+    const saveAcknowledged = textContent(sourceAssistant[1]!.data.message) === 'Saved and confirmed.'
+    expect(saveAcknowledged).toBe(true)
 
     const documentText = await readFile(join(repoRoot, 'docs', 'handoffs', 'current.md'), 'utf8')
     // Recompute the digest independently so the exact injected text below is not
@@ -261,9 +272,11 @@ describe('real Loader composition', () => {
     expect(documentText).not.toContain(repoRoot)
     const documentLines = documentText.trimEnd().split('\n')
 
-    // 4. Fresh agent: load injects durable recall without waking it. The normal
-    // (non-stale) result also proves the written handoff file is excluded from
-    // the Git state digest — otherwise it would already read as stale.
+    // 4. Fresh agent: load admits the recall onto the surface, then wakes the
+    // model once to acknowledge — both visible in a brand-new thread. The
+    // normal (non-stale) result also proves the written handoff file is
+    // excluded from the Git state digest — otherwise it would already read as
+    // stale.
     const freshAgent = ctx.agentLoop.create(
       SessionId('loader-fresh'),
       { provider: 'scripted', model: 'scripted' },
@@ -275,54 +288,59 @@ describe('real Loader composition', () => {
       kind: 'success',
       text: 'Loaded docs/handoffs/current.md. Send the next development instruction.',
     })
-    expect(freshAgent.status).toBe('idle')
-    expect(freshAgent.inbox.nextStep).toHaveLength(1)
-    const pendingRecall = freshAgent.inbox.nextStep[0]!
-    expect(pendingRecall.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
-    const pendingText = textContent(pendingRecall)
-    expect(pendingText).toBe(expectedRecall)
-    for (const fact of ['Implement handoff', 'src/index.ts', 'pnpm test', 'Run the next planned task']) {
-      expect(pendingText).toContain(fact)
-    }
-    expect(pendingText).toContain('<dsh-handoff>')
-    expect(pendingText).toContain('</dsh-handoff>')
-    expect(pendingText).toContain(`<!-- dsh-handoff-digest:sha256:${digest} -->`)
-    const pendingRecallMatches = pendingText === expectedRecall
-    const freshIdle = freshAgent.status === 'idle'
-
-    // 5. The next user turn admits the recall before the current instruction.
-    freshAgent.followup(createUserMessage({ content: [{ type: 'text', text: CONTINUATION }], source: { kind: 'user' } }))
     await freshAgent.whenIdle()
 
     const freshUserEvents = freshAgent.session.events.filter(
       (event): event is SessionEvent<'user/message'> => event.type === 'user/message',
     )
     expect(freshUserEvents).toHaveLength(2)
-    const recallSource = freshUserEvents[0]!.data.source
-    expect(recallSource).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
-    expect(textContent(freshUserEvents[0]!.data)).toBe(expectedRecall)
-    expect(freshUserEvents[1]!.data.source).toEqual({ kind: 'user' })
-    expect(textContent(freshUserEvents[1]!.data)).toBe(CONTINUATION)
-    const freshUserSources = freshUserEvents.map((event) => event.data.source)
+    expect(freshUserEvents[0]!.data.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
+    const recallText = textContent(freshUserEvents[0]!.data)
+    expect(recallText).toBe(expectedRecall)
+    for (const fact of ['Implement handoff', 'src/index.ts', 'pnpm test', 'Run the next planned task']) {
+      expect(recallText).toContain(fact)
+    }
+    expect(recallText).toContain('<dsh-handoff>')
+    expect(recallText).toContain('</dsh-handoff>')
+    expect(recallText).toContain(`<!-- dsh-handoff-digest:sha256:${digest} -->`)
+    expect(freshUserEvents[1]!.data.source).toEqual({
+      kind: 'plugin',
+      plugin: 'dsh-handoff',
+      form: 'notice',
+      summary: 'Loaded docs/handoffs/current.md',
+    })
+    const surfaceRecallMatches = recallText === expectedRecall
 
-    // 6. The third model request must see the full recall, then the instruction.
-    expect(adapter.requests).toHaveLength(3)
+    // 5. The user's next instruction lands after the recall and acknowledgment.
+    freshAgent.followup(createUserMessage({ content: [{ type: 'text', text: CONTINUATION }], source: { kind: 'user' } }))
+    await freshAgent.whenIdle()
+
+    const freshUserSources = freshAgent.session.events
+      .filter((event): event is SessionEvent<'user/message'> => event.type === 'user/message')
+      .map((event) => event.data.source)
+    expect(freshUserSources).toHaveLength(3)
+
+    // 6. The continuation request must see the full recall, the acknowledgment,
+    // then the instruction.
+    expect(adapter.requests).toHaveLength(5)
     for (const request of adapter.requests) {
       expect(request.provider).toBe('scripted')
       expect(request.model).toBe('scripted')
     }
-    const thirdRequest = adapter.requests[2]!
-    const thirdUserMessages = thirdRequest.messages.filter((message) => message.role === 'user')
-    expect(thirdUserMessages).toHaveLength(2)
-    expect(thirdUserMessages[0]!.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
-    expect(textContent(thirdUserMessages[0]!)).toBe(expectedRecall)
-    expect(thirdUserMessages[1]!.source).toEqual({ kind: 'user' })
-    expect(textContent(thirdUserMessages[1]!)).toBe(CONTINUATION)
-    const thirdUserSources = thirdUserMessages.map((message) => message.source)
-    const thirdRecallMatches = textContent(thirdUserMessages[0]!) === expectedRecall
-    const thirdInstruction = textContent(thirdUserMessages[1]!)
+    const continuationRequest = adapter.requests[4]!
+    const continuationUserMessages = continuationRequest.messages.filter((message) => message.role === 'user')
+    expect(continuationUserMessages).toHaveLength(3)
+    expect(continuationUserMessages[0]!.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
+    expect(textContent(continuationUserMessages[0]!)).toBe(expectedRecall)
+    expect(continuationUserMessages[1]!.source).toMatchObject({ kind: 'plugin', plugin: 'dsh-handoff', form: 'notice' })
+    expect(continuationUserMessages[2]!.source).toEqual({ kind: 'user' })
+    expect(textContent(continuationUserMessages[2]!)).toBe(CONTINUATION)
+    const thirdUserSources = continuationUserMessages.map((message) => message.source)
+    const thirdRecallMatches = textContent(continuationUserMessages[0]!) === expectedRecall
+    const thirdInstruction = textContent(continuationUserMessages[2]!)
 
-    // 7. Stale branch: a non-handoff change warns but still injects.
+    // 7. Stale branch: a non-handoff change warns but still injects and
+    // acknowledges.
     await writeFile(join(repoRoot, 'src', 'index.ts'), 'export const value = 2\n')
     const staleAgent = ctx.agentLoop.create(
       SessionId('loader-stale'),
@@ -335,12 +353,14 @@ describe('real Loader composition', () => {
       kind: 'success',
       text: 'Loaded docs/handoffs/current.md with a repository-state warning; current files take precedence. Send the next development instruction.',
     })
-    expect(staleAgent.status).toBe('idle')
-    expect(staleAgent.inbox.nextStep).toHaveLength(1)
-    const staleRecall = staleAgent.inbox.nextStep[0]!
+    await staleAgent.whenIdle()
+    const staleUserEvents = staleAgent.session.events.filter(
+      (event): event is SessionEvent<'user/message'> => event.type === 'user/message',
+    )
+    expect(staleUserEvents).toHaveLength(2)
+    const staleRecall = staleUserEvents[0]!.data
     expect(staleRecall.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
     expect(textContent(staleRecall)).toBe(expectedRecall)
-    const staleIdle = staleAgent.status === 'idle'
     const staleRecallSource = staleRecall.source
     const staleRecallMatches = textContent(staleRecall) === expectedRecall
 
@@ -364,23 +384,20 @@ describe('real Loader composition', () => {
     // headings, source form, event types, and ordering verbatim.
     const observation = [
       `save result: ${saveExec!.result.kind} ${saveExec!.result.text}`,
-      `save preserves source surface: ${surfacePreserved}`,
+      `save acknowledges via model turn: ${saveAcknowledged}`,
       '',
       '--- handoff document ---',
       ...documentLines,
       '--- fresh load ---',
       `fresh load result: ${freshLoadExec!.result.text}`,
-      `fresh agent idle after load: ${freshIdle}`,
-      `inbox recall matches expectedRecall: ${pendingRecallMatches}`,
-      `recall source: ${JSON.stringify(recallSource)}`,
-      `admitted user/message order: ${freshUserSources.map((source) => JSON.stringify(source)).join(' then ')}`,
+      `surface recall matches expectedRecall: ${surfaceRecallMatches}`,
+      `fresh user/message order: ${freshUserSources.map((source) => JSON.stringify(source)).join(' then ')}`,
       `model request user order: ${thirdUserSources.map((source) => JSON.stringify(source)).join(' then ')}`,
       `model request recall matches expectedRecall: ${thirdRecallMatches}`,
       `model request current instruction: ${thirdInstruction}`,
       '',
       '--- stale load ---',
       `stale load result: ${staleLoadExec!.result.text}`,
-      `stale agent idle after load: ${staleIdle}`,
       `stale recall source: ${JSON.stringify(staleRecallSource)}`,
       `stale recall matches expectedRecall: ${staleRecallMatches}`,
       '',
@@ -391,7 +408,7 @@ describe('real Loader composition', () => {
     expect(observation.map((line) => normalizeSnapshot(line, repoRoot!))).toMatchInlineSnapshot(`
       [
         "save result: success Saved docs/handoffs/current.md through session seq 14 (0 secrets redacted).",
-        "save preserves source surface: true",
+        "save acknowledges via model turn: true",
         "",
         "--- handoff document ---",
         "# DSH Handoff",
@@ -439,17 +456,14 @@ describe('real Loader composition', () => {
         "(none)",
         "--- fresh load ---",
         "fresh load result: Loaded docs/handoffs/current.md. Send the next development instruction.",
-        "fresh agent idle after load: true",
-        "inbox recall matches expectedRecall: true",
-        "recall source: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"}",
-        "admitted user/message order: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"} then {"kind":"user"}",
-        "model request user order: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"} then {"kind":"user"}",
+        "surface recall matches expectedRecall: true",
+        "fresh user/message order: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"} then {"kind":"plugin","plugin":"dsh-handoff","form":"notice","summary":"Loaded docs/handoffs/current.md"} then {"kind":"user"}",
+        "model request user order: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"} then {"kind":"plugin","plugin":"dsh-handoff","form":"notice","summary":"Loaded docs/handoffs/current.md"} then {"kind":"user"}",
         "model request recall matches expectedRecall: true",
         "model request current instruction: Continue from the handoff",
         "",
         "--- stale load ---",
         "stale load result: Loaded docs/handoffs/current.md with a repository-state warning; current files take precedence. Send the next development instruction.",
-        "stale agent idle after load: true",
         "stale recall source: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"}",
         "stale recall matches expectedRecall: true",
         "",
