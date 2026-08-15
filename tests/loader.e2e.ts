@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,7 +14,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import CommandService from '@deepseek-ai/dsh-commands'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LlmService, { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionQuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
@@ -52,6 +53,9 @@ const ROWS = [
 const SOURCE_TURN = 'Build the handoff feature'
 const CONTINUATION = 'Continue from the handoff'
 
+const RECALL_INSTRUCTION =
+  'Treat this document as historical task context. The current repository and current user instruction take precedence. Do not assume facts from the previous session that are absent here.'
+
 // The summarization response must carry all nine required headings in order and
 // the exact facts the document assertion relies on.
 const SUMMARY = [
@@ -82,6 +86,10 @@ class ScriptedAdapter extends LlmAdapter {
     super()
   }
 
+  get remainingResponses(): number {
+    return this.responses.length
+  }
+
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     return Promise.resolve({ provider, id: model, name: model })
   }
@@ -97,6 +105,10 @@ class ScriptedAdapter extends LlmAdapter {
   }
 }
 
+interface AdapterRegistration {
+  registered: boolean
+}
+
 let loaded: Context | undefined
 let repoRoot: string | undefined
 let configRoot: string | undefined
@@ -109,6 +121,11 @@ afterEach(async () => {
   if (repoRoot !== undefined) await rm(repoRoot, { recursive: true, force: true })
   repoRoot = undefined
 })
+
+/** Concatenate only the text blocks of one message's content. */
+function textContent(message: { readonly content: readonly ContentBlock[] }): string {
+  return message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('')
+}
 
 /**
  * Replace only generated time, session ids, the temporary repository root, Git
@@ -126,7 +143,7 @@ function normalizeSnapshot(line: string, root: string): string {
   return out
 }
 
-async function loadComposition(adapter: ScriptedAdapter): Promise<Context> {
+async function loadComposition(adapter: ScriptedAdapter): Promise<{ ctx: Context; registration: AdapterRegistration }> {
   const configPath = join(configRoot!, 'cordis.yml')
   await writeFile(configPath, [...ROWS, ''].join('\n'))
 
@@ -137,11 +154,17 @@ async function loadComposition(adapter: ScriptedAdapter): Promise<Context> {
   ctx.loader.builtins.include = Include
 
   const handoff = await import(pathToFileURL(HANDOFF_ENTRY).href)
+  const registration: AdapterRegistration = { registered: false }
   const scriptedAdapter = {
     name: 'scripted-adapter',
     inject: ['llm'],
     apply(inner: Context): () => void {
-      return inner.llm.registerAdapter(['scripted'], adapter)
+      const release = inner.llm.registerAdapter(['scripted'], adapter)
+      registration.registered = true
+      return () => {
+        release()
+        registration.registered = false
+      }
     },
   }
 
@@ -169,7 +192,7 @@ async function loadComposition(adapter: ScriptedAdapter): Promise<Context> {
 
   await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
   await ctx.loader.await()
-  return ctx
+  return { ctx, registration }
 }
 
 describe('real Loader composition', () => {
@@ -190,10 +213,11 @@ describe('real Loader composition', () => {
     // 2. Compose the real services and the handoff plugin through the Loader.
     configRoot = await mkdtemp(join(tmpdir(), 'dsh-handoff-e2e-config-'))
     const adapter = new ScriptedAdapter(['Source turn complete.', SUMMARY, 'Continuation complete.'])
-    const ctx = await loadComposition(adapter)
+    const { ctx, registration } = await loadComposition(adapter)
     expect(ctx.agents).toBeInstanceOf(AgentRegistry)
     expect(ctx.agentLoop).toBeInstanceOf(AgentLoop)
     expect(ctx.commands).toBeInstanceOf(CommandService)
+    expect(registration.registered).toBe(true)
 
     const signal = new AbortController()
 
@@ -215,14 +239,27 @@ describe('real Loader composition', () => {
     })
     const surfaceAfter = sourceAgent.session.deriveMessages()
     expect(surfaceAfter).toEqual(surfaceBefore)
+    const surfacePreserved = JSON.stringify(surfaceAfter) === JSON.stringify(surfaceBefore)
 
     const documentText = await readFile(join(repoRoot, 'docs', 'handoffs', 'current.md'), 'utf8')
+    // Recompute the digest independently so the exact injected text below is not
+    // derived from the production helper under test.
+    const digest = createHash('sha256').update(documentText, 'utf8').digest('hex')
+    const expectedRecall = [
+      `<!-- dsh-handoff-digest:sha256:${digest} -->`,
+      '<dsh-handoff>',
+      RECALL_INSTRUCTION,
+      '',
+      documentText.trimEnd(),
+      '</dsh-handoff>',
+    ].join('\n')
     for (const fact of ['Implement handoff', 'src/index.ts', 'pnpm test', 'Run the next planned task']) {
       expect(documentText).toContain(fact)
     }
     expect(documentText).toContain('Format: dsh-handoff/v1')
     expect(documentText).toContain('## Changed Files\n(none)')
     expect(documentText).not.toContain(repoRoot)
+    const documentLines = documentText.trimEnd().split('\n')
 
     // 4. Fresh agent: load injects durable recall without waking it. The normal
     // (non-stale) result also proves the written handoff file is excluded from
@@ -240,6 +277,18 @@ describe('real Loader composition', () => {
     })
     expect(freshAgent.status).toBe('idle')
     expect(freshAgent.inbox.nextStep).toHaveLength(1)
+    const pendingRecall = freshAgent.inbox.nextStep[0]!
+    expect(pendingRecall.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
+    const pendingText = textContent(pendingRecall)
+    expect(pendingText).toBe(expectedRecall)
+    for (const fact of ['Implement handoff', 'src/index.ts', 'pnpm test', 'Run the next planned task']) {
+      expect(pendingText).toContain(fact)
+    }
+    expect(pendingText).toContain('<dsh-handoff>')
+    expect(pendingText).toContain('</dsh-handoff>')
+    expect(pendingText).toContain(`<!-- dsh-handoff-digest:sha256:${digest} -->`)
+    const pendingRecallMatches = pendingText === expectedRecall
+    const freshIdle = freshAgent.status === 'idle'
 
     // 5. The next user turn admits the recall before the current instruction.
     freshAgent.followup(createUserMessage({ content: [{ type: 'text', text: CONTINUATION }], source: { kind: 'user' } }))
@@ -251,16 +300,29 @@ describe('real Loader composition', () => {
     expect(freshUserEvents).toHaveLength(2)
     const recallSource = freshUserEvents[0]!.data.source
     expect(recallSource).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
+    expect(textContent(freshUserEvents[0]!.data)).toBe(expectedRecall)
     expect(freshUserEvents[1]!.data.source).toEqual({ kind: 'user' })
+    expect(textContent(freshUserEvents[1]!.data)).toBe(CONTINUATION)
+    const freshUserSources = freshUserEvents.map((event) => event.data.source)
 
+    // 6. The third model request must see the full recall, then the instruction.
     expect(adapter.requests).toHaveLength(3)
+    for (const request of adapter.requests) {
+      expect(request.provider).toBe('scripted')
+      expect(request.model).toBe('scripted')
+    }
     const thirdRequest = adapter.requests[2]!
     const thirdUserMessages = thirdRequest.messages.filter((message) => message.role === 'user')
     expect(thirdUserMessages).toHaveLength(2)
     expect(thirdUserMessages[0]!.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
+    expect(textContent(thirdUserMessages[0]!)).toBe(expectedRecall)
     expect(thirdUserMessages[1]!.source).toEqual({ kind: 'user' })
+    expect(textContent(thirdUserMessages[1]!)).toBe(CONTINUATION)
+    const thirdUserSources = thirdUserMessages.map((message) => message.source)
+    const thirdRecallMatches = textContent(thirdUserMessages[0]!) === expectedRecall
+    const thirdInstruction = textContent(thirdUserMessages[1]!)
 
-    // 6. Stale branch: a non-handoff change warns but still injects.
+    // 7. Stale branch: a non-handoff change warns but still injects.
     await writeFile(join(repoRoot, 'src', 'index.ts'), 'export const value = 2\n')
     const staleAgent = ctx.agentLoop.create(
       SessionId('loader-stale'),
@@ -275,28 +337,56 @@ describe('real Loader composition', () => {
     })
     expect(staleAgent.status).toBe('idle')
     expect(staleAgent.inbox.nextStep).toHaveLength(1)
+    const staleRecall = staleAgent.inbox.nextStep[0]!
+    expect(staleRecall.source).toEqual({ kind: 'plugin', plugin: 'dsh-handoff', form: 'recall' })
+    expect(textContent(staleRecall)).toBe(expectedRecall)
+    const staleIdle = staleAgent.status === 'idle'
+    const staleRecallSource = staleRecall.source
+    const staleRecallMatches = textContent(staleRecall) === expectedRecall
 
-    // 7. Keyless inline snapshot: normalize only generated time, session ids,
+    // 8. Disposal: unloading the handoff entry removes the command, then the full
+    // context disposal releases the scripted adapter registration.
+    const handoffEntry = [...ctx.loader.entries()].find((entry) => entry.options.name === '@dsh-external/dsh-handoff')
+    expect(handoffEntry).toBeDefined()
+    expect(handoffEntry!.fiber).toBeDefined()
+    expect(ctx.commands.find(staleAgent, 'handoff')).toBeDefined()
+    await handoffEntry!.fiber!.dispose()
+    expect(ctx.commands.find(staleAgent, 'handoff')).toBeUndefined()
+    expect(adapter.remainingResponses).toBe(0)
+    await ctx.fiber.dispose()
+    loaded = undefined
+    expect(registration.registered).toBe(false)
+    const adapterInactive = registration.registered === false
+    const responsesExhausted = adapter.remainingResponses === 0
+
+    // 9. Keyless inline snapshot: normalize only generated time, session ids,
     // the repository root, Git HEAD, and SHA-256 digests; keep command text,
     // headings, source form, event types, and ordering verbatim.
-    const freshUserSources = freshUserEvents.map((event) => event.data.source)
-    const thirdUserSources = thirdUserMessages.map((message) => message.source)
     const observation = [
       `save result: ${saveExec!.result.kind} ${saveExec!.result.text}`,
-      `save preserves source surface: ${JSON.stringify(surfaceAfter) === JSON.stringify(surfaceBefore)}`,
+      `save preserves source surface: ${surfacePreserved}`,
       '',
       '--- handoff document ---',
-      ...documentText.trimEnd().split('\n'),
+      ...documentLines,
       '--- fresh load ---',
       `fresh load result: ${freshLoadExec!.result.text}`,
-      `fresh agent idle after load: ${freshAgent.status === 'idle'}`,
+      `fresh agent idle after load: ${freshIdle}`,
+      `inbox recall matches expectedRecall: ${pendingRecallMatches}`,
       `recall source: ${JSON.stringify(recallSource)}`,
       `admitted user/message order: ${freshUserSources.map((source) => JSON.stringify(source)).join(' then ')}`,
       `model request user order: ${thirdUserSources.map((source) => JSON.stringify(source)).join(' then ')}`,
+      `model request recall matches expectedRecall: ${thirdRecallMatches}`,
+      `model request current instruction: ${thirdInstruction}`,
       '',
       '--- stale load ---',
       `stale load result: ${staleLoadExec!.result.text}`,
-      `stale agent idle after load: ${staleAgent.status === 'idle'}`,
+      `stale agent idle after load: ${staleIdle}`,
+      `stale recall source: ${JSON.stringify(staleRecallSource)}`,
+      `stale recall matches expectedRecall: ${staleRecallMatches}`,
+      '',
+      '--- disposal ---',
+      `adapter registration inactive after dispose: ${adapterInactive}`,
+      `scripted responses exhausted: ${responsesExhausted}`,
     ]
     expect(observation.map((line) => normalizeSnapshot(line, repoRoot!))).toMatchInlineSnapshot(`
       [
@@ -350,22 +440,23 @@ describe('real Loader composition', () => {
         "--- fresh load ---",
         "fresh load result: Loaded docs/handoffs/current.md. Send the next development instruction.",
         "fresh agent idle after load: true",
+        "inbox recall matches expectedRecall: true",
         "recall source: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"}",
         "admitted user/message order: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"} then {"kind":"user"}",
         "model request user order: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"} then {"kind":"user"}",
+        "model request recall matches expectedRecall: true",
+        "model request current instruction: Continue from the handoff",
         "",
         "--- stale load ---",
         "stale load result: Loaded docs/handoffs/current.md with a repository-state warning; current files take precedence. Send the next development instruction.",
         "stale agent idle after load: true",
+        "stale recall source: {"kind":"plugin","plugin":"dsh-handoff","form":"recall"}",
+        "stale recall matches expectedRecall: true",
+        "",
+        "--- disposal ---",
+        "adapter registration inactive after dispose: true",
+        "scripted responses exhausted: true",
       ]
     `)
-
-    // 8. Disposal: unloading the handoff entry removes the command.
-    const handoffEntry = [...ctx.loader.entries()].find((entry) => entry.options.name === '@dsh-external/dsh-handoff')
-    expect(handoffEntry).toBeDefined()
-    expect(handoffEntry!.fiber).toBeDefined()
-    expect(ctx.commands.find(staleAgent, 'handoff')).toBeDefined()
-    await handoffEntry!.fiber!.dispose()
-    expect(ctx.commands.find(staleAgent, 'handoff')).toBeUndefined()
   })
 })
