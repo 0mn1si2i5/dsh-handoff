@@ -333,12 +333,25 @@ describe('loadHandoff', () => {
     const h = await harness({ document: validDocument() })
     await h.load()
     const pending = h.agent.inbox.nextStep[0]!
+    // Simulate a turn admitting the recall: move the pending message out of the
+    // inbox and onto the durable surface. This leaves no other inbox message
+    // carrying the same marker, so the second load can only deduplicate through
+    // the surface scan — a regression in that scan must fail here, not fall back
+    // to the still-pending inbox branch.
+    expect(h.agent.inbox.remove(pending.id)).toBe(true)
     h.agent.session.append('user/message', createUserMessage({ content: pending.content, source: pending.source }), {
       surfaceOp: 'append',
     })
+
+    expect(h.agent.inbox.nextStep).toHaveLength(0)
+
     const result = await h.load()
-    expect(result).toMatchObject({ kind: 'already-loaded', path: HANDOFF_PATH })
-    expect(h.agent.inbox.nextStep).toHaveLength(1)
+    expect(result.kind).toBe('already-loaded')
+    if (result.kind === 'already-loaded') {
+      expect(result.path).toBe(HANDOFF_PATH)
+      expect(result.digest).toBe(handoffDigest(validDocument()))
+    }
+    expect(h.agent.inbox.nextStep).toHaveLength(0)
     await h.dispose()
   })
 
