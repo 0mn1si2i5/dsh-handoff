@@ -85,4 +85,50 @@ describe('handoff redaction', () => {
     const result = redactText('prefix abcdefghSUFFIX suffix', { SHORT_TOKEN: 'abcdefgh', LONG_TOKEN: 'abcdefghSUFFIX' })
     expect(result.text).toBe('prefix <redacted:environment> suffix')
   })
+
+  it('redacts the complete Bearer value across ~ without leaking the suffix', () => {
+    const input = 'Authorization: Bearer abcdefgh~SECRETTAIL==\nX-Next: kept-field'
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('abcdefgh~SECRETTAIL==')
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toContain('<redacted:authorization>')
+    expect(result.text).toBe('Authorization: Bearer <redacted:authorization>\nX-Next: kept-field')
+    expect(result.counts.authorization).toBe(1)
+  })
+
+  it('redacts the complete generic assignment value across ~ without leaking the suffix', () => {
+    const input = 'token=abcdefgh~SECRETTAIL kept-field'
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('abcdefgh~SECRETTAIL')
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toContain('<redacted:api-token>')
+    expect(result.text).toBe('token=<redacted:api-token> kept-field')
+    expect(result.counts['api-token']).toBe(1)
+  })
+
+  it('redacts the complete _authToken value across ~ without leaking the suffix', () => {
+    const input = '_authToken=abcdefgh~SECRETTAIL\nregistry=https://example.com/'
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('abcdefgh~SECRETTAIL')
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toContain('<redacted:npm-token>')
+    expect(result.text).toBe('_authToken=<redacted:npm-token>\nregistry=https://example.com/')
+    expect(result.counts['npm-token']).toBe(1)
+  })
+
+  it('redacts complete npm_ and sk_ prefixed tokens across ~ without leaking the suffix', () => {
+    const input = 'npm_abcdefgh~SECRETTAIL sk_abcdefgh~SECRETTAIL kept-field'
+    const result = redactText(input, {})
+    expect(result.text).not.toContain('SECRETTAIL')
+    expect(result.text).toBe('<redacted:npm-token> <redacted:api-token> kept-field')
+    expect(result.counts['npm-token']).toBe(1)
+    expect(result.counts['api-token']).toBe(1)
+  })
+
+  it('redacts a complete quoted assignment value without leaking its content', () => {
+    const input = 'token="abcdefgh secret" kept-field'
+    const result = redactText(input, {})
+    expect(result.text).toBe('token=<redacted:api-token> kept-field')
+    expect(result.counts['api-token']).toBe(1)
+  })
 })

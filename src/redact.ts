@@ -3,11 +3,6 @@ import type { RedactionCounts, SecretKind } from './types.ts'
 
 const MIN_CREDENTIAL_CHARS = 8
 
-// Full credential alphabet (base64 plus the common `_`, `.`, and `-`
-// separators). Rules consume the entire value so a legal-looking prefix never
-// leaves a secret suffix such as `+`, `/`, `=`, or `.` exposed.
-const CREDENTIAL_CHARS = 'A-Za-z0-9_+./=-'
-
 interface Rule {
   readonly category: SecretKind
   readonly regex: RegExp
@@ -18,6 +13,14 @@ interface Rule {
 // userinfo passwords, common prefixed API tokens, generic assignments. npm
 // tokens must run before the generic API-token assignment so `_authToken=`
 // values are classified as npm rather than a bare `token=` assignment.
+//
+// Credential values are matched by their syntactic boundary, not by a
+// whitelist of allowed characters: an unquoted value runs to the next
+// whitespace or field separator (`,`/`;`), and an assignment may also hold a
+// quoted value. Any other character -- including legal-but-unusual credential
+// characters such as `~` -- is part of the value, so a rule either consumes
+// the whole value or fails to match rather than replacing a legal prefix and
+// leaking the suffix.
 const RULES: readonly Rule[] = [
   {
     category: 'private-key',
@@ -26,17 +29,17 @@ const RULES: readonly Rule[] = [
   },
   {
     category: 'npm-token',
-    regex: new RegExp(`_authToken=([${CREDENTIAL_CHARS}]{8,})`, 'g'),
+    regex: /_authToken=(?:"[^"\n]{8,}"|'[^'\n]{8,}'|[^\s,;]{8,})/g,
     replacement: '_authToken=<redacted:npm-token>',
   },
   {
     category: 'npm-token',
-    regex: new RegExp(`npm_[${CREDENTIAL_CHARS}]{8,}`, 'g'),
+    regex: /npm_[^\s,;]{8,}/g,
     replacement: '<redacted:npm-token>',
   },
   {
     category: 'authorization',
-    regex: new RegExp(`(Bearer|Basic)\\s+([${CREDENTIAL_CHARS}]{8,})`, 'gi'),
+    regex: /(Bearer|Basic)\s+[^\s,;]{8,}/gi,
     replacement: '$1 <redacted:authorization>',
   },
   {
@@ -46,17 +49,17 @@ const RULES: readonly Rule[] = [
   },
   {
     category: 'api-token',
-    regex: new RegExp(`(sk_|dsk_|ghp_|github_pat_)[${CREDENTIAL_CHARS}]{8,}`, 'g'),
+    regex: /(sk_|dsk_|ghp_|github_pat_)[^\s,;]{8,}/g,
     replacement: '<redacted:api-token>',
   },
   {
     category: 'password',
-    regex: new RegExp(`(password)(\\s*[=:]\\s*)([${CREDENTIAL_CHARS}]{8,})`, 'gi'),
+    regex: /(password)(\s*[=:]\s*)(?:"[^"\n]{8,}"|'[^'\n]{8,}'|[^\s,;]{8,})/gi,
     replacement: '$1$2<redacted:password>',
   },
   {
     category: 'api-token',
-    regex: new RegExp(`(api[_-]?key|token|secret)(\\s*[=:]\\s*)([${CREDENTIAL_CHARS}]{8,})`, 'gi'),
+    regex: /\b(api[_-]?key|token|secret)\b(\s*[=:]\s*)(?:"[^"\n]{8,}"|'[^'\n]{8,}'|[^\s,;]{8,})/gi,
     replacement: '$1$2<redacted:api-token>',
   },
 ]
