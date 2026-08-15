@@ -51,3 +51,12 @@ export interface ParsedHandoffDocument extends HandoffDocumentInput {
   readonly text: string
   readonly digest: string
 }
+
+export interface GitSnapshot {
+  readonly root: string
+  readonly relativeCwd: string
+  readonly branch: string
+  readonly head: string
+  readonly changedFiles: readonly string[]
+  readonly stateDigest: string
+}
