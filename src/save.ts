@@ -1,6 +1,10 @@
 import { deriveEventMessage } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+// Empty type import: applies the package's `declare module '@deepseek-ai/cordis'`
+// augmentation so `Context.sessionQuery` is visible in the production build
+// graph (tsconfig.build.json compiles `src` only).
+import type {} from '@deepseek-ai/dsh-session-query'
 import { captureGit } from './git.ts'
 import { summarizeHandoff } from './summarize.ts'
 import { mergeRedactionCounts, redactText } from './redact.ts'
