@@ -110,7 +110,7 @@ describe('package contents', () => {
       dsh: { bundle: { patch: string } }
       publishConfig: { access: string }
     } & Record<(typeof DEP_SECTIONS)[number], Record<string, string> | undefined>
-    expect(packedPkg.name).toBe('@dsh-external/dsh-handoff')
+    expect(packedPkg.name).toBe('dsh-handoff')
     expect(packedPkg.version).toBe('0.1.0')
     expect(packedPkg.publishConfig.access).toBe('public')
     expect(packedPkg.main).toBe('lib/index.js')

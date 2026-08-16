@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-external/dsh-handoff",
+  "name": "dsh-handoff",
   "version": "0.1.0",
   "description": "Save and load a compact, Git-tracked handoff for DeepSeek Harness sessions",
   "license": "BSD-3-Clause",

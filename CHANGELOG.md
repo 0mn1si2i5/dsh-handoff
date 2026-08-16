@@ -16,6 +16,5 @@ Initial release.
 - `/handoff load` — inject the handoff document as a durable recall that is
   immediately visible in the conversation, then have the assistant confirm.
 - Assistant confirmation after both `save` and `load`.
-- GitHub distribution via `dsh plugin --profile web add github:dsh-external/dsh-handoff`
-  (the org's mainstream channel); the built `lib/` is committed so no install-time
-  build script is required.
+- GitHub distribution via `dsh plugin --profile web add github:0mn1si2i5/dsh-handoff`
+  (the built `lib/` is committed so no install-time build script is required).

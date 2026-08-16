@@ -44,7 +44,7 @@ const ROWS = [
   "- name: '@deepseek-ai/dsh-fs-local'",
   "- name: '@deepseek-ai/dsh-subprocess-local'",
   "- name: '@test/scripted-adapter'",
-  "- name: '@dsh-external/dsh-handoff'",
+  "- name: 'dsh-handoff'",
   '  config:',
   '    summarizationProvider: scripted',
   '    summarizationModel: scripted',
@@ -180,7 +180,7 @@ async function loadComposition(adapter: ScriptedAdapter): Promise<{ ctx: Context
     ['@deepseek-ai/dsh-fs-local', LocalFileSystem],
     ['@deepseek-ai/dsh-subprocess-local', LocalSubprocessService],
     ['@test/scripted-adapter', scriptedAdapter],
-    ['@dsh-external/dsh-handoff', handoff],
+    ['dsh-handoff', handoff],
   ])
   ctx.loader.internal = {
     version: 'v2',
@@ -366,7 +366,7 @@ describe('real Loader composition', () => {
 
     // 8. Disposal: unloading the handoff entry removes the command, then the full
     // context disposal releases the scripted adapter registration.
-    const handoffEntry = [...ctx.loader.entries()].find((entry) => entry.options.name === '@dsh-external/dsh-handoff')
+    const handoffEntry = [...ctx.loader.entries()].find((entry) => entry.options.name === 'dsh-handoff')
     expect(handoffEntry).toBeDefined()
     expect(handoffEntry!.fiber).toBeDefined()
     expect(ctx.commands.find(staleAgent, 'handoff')).toBeDefined()

@@ -1,4 +1,4 @@
-# @dsh-external/dsh-handoff
+# dsh-handoff
 
 在 DeepSeek Harness 会话之间传递开发上下文。
 
@@ -20,10 +20,10 @@ DeepSeek Harness 的会话通常很长，换新会话时难以把上一个会话
 
 ## 安装
 
-通过 GitHub 分发安装，与 `dsh-external` org 的主流方式一致，无需 npm scope：
+通过 GitHub 分发安装，无需 npm scope：
 
 ```bash
-dsh plugin --profile web add github:dsh-external/dsh-handoff
+dsh plugin --profile web add github:0mn1si2i5/dsh-handoff
 ```
 
 安装的是仓库里已提交的构建产物（`lib/`），无需在安装时执行构建脚本。
