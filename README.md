@@ -5,11 +5,10 @@ Pass development context between DeepSeek Harness sessions.
 
 **问题 / Problem** — Harness 会话很长，换新会话时难以带回已确认的结论、进度与下一步。Harness sessions run long; starting fresh means losing the conclusions and progress you already reached.
 
-**`/handoff save`** — 把当前线程总结为 `docs/handoffs/current.md`。Summarize the current thread into `docs/handoffs/current.md`.
-**`/handoff load`** — 把这份文档作为召回节点注入新会话。Inject it into a new session as a recall node.
-
-**脱敏 / Redaction** — 对消息、模型输出、Git 文件名和动态元数据做确定性脱敏。Deterministic redaction of messages, outputs, Git filenames, and dynamic metadata.
-**Git 状态 / Git state** — 捕获分支、HEAD 和变更文件列表。Captures branch, HEAD, and the changed-file list.
+- **`/handoff save`** — 把当前线程总结为 `docs/handoffs/current.md`。Summarize the current thread into `docs/handoffs/current.md`.
+- **`/handoff load`** — 把这份文档作为召回节点注入新会话。Inject it into a new session as a recall node.
+- **脱敏 / Redaction** — 对消息、模型输出、Git 文件名和动态元数据做确定性脱敏。Deterministic redaction of messages, outputs, Git filenames, and dynamic metadata.
+- **Git 状态 / Git state** — 捕获分支、HEAD 和变更文件列表。Captures branch, HEAD, and the changed-file list.
 
 **不保证 / Not guaranteed** — 不是完整会话日志，不自动 save/load，不解决合并冲突；脱敏不是对一切秘密格式的绝对保证。Not a full session log; no auto save/load; no merge or conflict resolution; redaction is not an absolute guarantee for every secret format.
 
@@ -44,6 +43,8 @@ dsh plugin --profile web add github:0mn1si2i5/dsh-handoff
 1. 在原线程执行 `/handoff save`，生成 `docs/handoffs/current.md`。Run `/handoff save` in the source thread.
 2. 查看并提交这份文档。Review and commit the document.
 3. 在同一仓库的新线程执行 `/handoff load`，交接文档立即显示为召回节点。Run `/handoff load` in a new thread in the same repository.
+
+![dsh-handoff 演示：在源线程执行 /handoff save 保存交接文档，在新线程执行 /handoff load 加载它](docs/dsh-handoff-demo.gif)
 
 > DeepSeek Harness 仍处于 Developer Preview，本插件针对当前预览版本开发，不承诺稳定 API 兼容。
 
